@@ -170,7 +170,7 @@ If you want the image to be available to you forever - download it by opening it
 
 ## Error Handling
 
-- `**RawValidationError**`: Raised when the RAW option is used with unsupported models.
+- **RawValidationError**: Raised when the RAW option is used with unsupported models.
 
 - **Timeout**: Raised if the result is not ready within the specified timeout period.
 
