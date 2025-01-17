@@ -1,20 +1,30 @@
 """
 title: Function for use FLUX.1.1 Pro/Ultra/Raw and Flux-dev
 author: fovendor
-version: 0.8.3
+version: 0.9.1
+github: https://github.com/fovendor/open-web-ui-flux1.1-pro
 license: MIT
 requirements: pydantic, requests
 environment_variables: BFL_API_KEY
 """
 
-from typing import Any, Dict, Generator, Iterator, List, Union
-import base64
 import os
 import time
+import uuid
+import mimetypes
+from pathlib import Path
+from typing import Any, Dict, List, Union
+
 import requests
+from pydantic import BaseModel, Field, model_validator
+
 from open_webui.utils.misc import get_last_user_message
-from pydantic import BaseModel, Field, model_validator, ValidationError
-from enum import Enum
+from open_webui.config import (
+    CACHE_DIR,
+)  # Import CACHE_DIR from Open WebUI configuration
+
+IMAGE_CACHE_DIR = Path(CACHE_DIR).joinpath("image/generations/")
+IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 PLUGIN_NAME = "Black Forest Labs: FLUX 1.1 Pro"
 
@@ -39,15 +49,6 @@ class Pipe:
             default="https://api.bfl.ml/v1",
             description="Base URL for the Black Forest Labs API.",
         )
-        """
-        The flux-pro-1.1 and flux-dev models support the following sizes and aspect ratios:
-        "width": {"maximum": 1440.0, "minimum": 256.0},
-        "height": {"maximum": 1440.0, "minimum": 256.0}
-        
-        The flux-pro-1.1-ultra model supports high-resolution images:
-        "width": {"maximum": 2752.0, "minimum": 256.0},
-        "height": {"maximum": 2752.0, "minimum": 256.0}
-        """
         api_endpoint: str = Field(
             default="flux-pro-1.1-ultra",
             description="Endpoint path for the image generation API.",
@@ -179,6 +180,32 @@ class Pipe:
     def pipes(self) -> List[Dict[str, str]]:
         return [{"id": "flux-1-1-pro", "name": PLUGIN_NAME}]
 
+    def save_url_image(self, url: str) -> str:
+        """
+        Saves an image from a URL to a local directory and returns the path to the file
+        """
+        image_id = str(uuid.uuid4())
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+
+            if response.headers["content-type"].startswith("image"):
+                mime_type = response.headers["content-type"]
+                image_format = mimetypes.guess_extension(mime_type) or ".png"
+
+                image_filename = f"{image_id}{image_format}"
+                file_path = IMAGE_CACHE_DIR / image_filename
+
+                with open(file_path, "wb") as image_file:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        image_file.write(chunk)
+
+                return f"/cache/image/generations/{image_filename}"
+            else:
+                raise ValueError("URL does not point to an image.")
+        except Exception as e:
+            raise RuntimeError(f"Error saving image: {e}")
+
     async def pipe(self, body: Dict[str, Any]) -> Union[str, Any]:
         prompt = get_last_user_message(body["messages"])
 
@@ -186,8 +213,11 @@ class Pipe:
             bfl_task_id = self.send_image_generation_request(prompt)
             image_url = self.poll_result(bfl_task_id)
 
-            # Return text and image in one message
-            return f"**Prompt:** {prompt}\n\n![BFL Image]({image_url})"
+            # Save the image to a local directory
+            local_image_path = self.save_url_image(image_url)
+
+            # Return text and link to local image
+            return f"**Prompt:** {prompt}\n\n![BFL Image]({local_image_path})"
         except requests.exceptions.RequestException as e:
             return f"Error: Request failed: {e}"
         except TimeoutError as e:
