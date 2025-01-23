@@ -1,7 +1,7 @@
 """
 title: Function for use FLUX.1.1 Pro/Ultra/Raw and Flux-dev
 author: fovendor
-version: 0.9.6
+version: 0.9.4
 github: https://github.com/fovendor/open-web-ui-flux1.1-pro
 license: MIT
 requirements: pydantic, requests, asyncio
