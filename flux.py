@@ -1,7 +1,7 @@
 """
 title: Function for use FLUX.1.1 Pro/Ultra/Raw and Flux-dev
 author: fovendor
-version: 0.9.3
+version: 0.9.6
 github: https://github.com/fovendor/open-web-ui-flux1.1-pro
 license: MIT
 requirements: pydantic, requests, asyncio
@@ -27,6 +27,75 @@ IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 PLUGIN_NAME = "Black Forest Labs: FLUX 1.1 Pro"
 
+# ------------------------------------------------
+# Единый список вариантов (модель + разрешение/AR)
+# ------------------------------------------------
+DIMENSION_ENUM_VALUES = [
+    # flux-dev
+    "flux-dev: 1440x1440",
+    "flux-dev: 1440x896",
+    "flux-dev: 896x1440",
+    # flux-pro-1.1
+    "flux-pro-1.1: 1440x1440",
+    "flux-pro-1.1: 1440x896",
+    "flux-pro-1.1: 896x1440",
+    # flux-pro-1.1-ultra (соотношения сторон)
+    "flux-pro-1.1-ultra: 1:1",
+    "flux-pro-1.1-ultra: 16:9",
+    "flux-pro-1.1-ultra: 9:16",
+]
+
+# ------------------------------------------------
+# Сопоставление выбора -> параметры
+# ------------------------------------------------
+DIMENSION_OPTIONS = {
+    # flux-dev
+    "flux-dev: 1440x1440": {
+        "endpoint": "flux-dev",
+        "width": 1440,
+        "height": 1440,
+    },
+    "flux-dev: 1440x896": {
+        "endpoint": "flux-dev",
+        "width": 1440,
+        "height": 896,
+    },
+    "flux-dev: 896x1440": {
+        "endpoint": "flux-dev",
+        "width": 896,
+        "height": 1440,
+    },
+    # flux-pro-1.1
+    "flux-pro-1.1: 1440x1440": {
+        "endpoint": "flux-pro-1.1",
+        "width": 1440,
+        "height": 1440,
+    },
+    "flux-pro-1.1: 1440x896": {
+        "endpoint": "flux-pro-1.1",
+        "width": 1440,
+        "height": 896,
+    },
+    "flux-pro-1.1: 896x1440": {
+        "endpoint": "flux-pro-1.1",
+        "width": 896,
+        "height": 1440,
+    },
+    # flux-pro-1.1-ultra (AR)
+    "flux-pro-1.1-ultra: 1:1": {
+        "endpoint": "flux-pro-1.1-ultra",
+        "aspect_ratio": "1:1",
+    },
+    "flux-pro-1.1-ultra: 16:9": {
+        "endpoint": "flux-pro-1.1-ultra",
+        "aspect_ratio": "16:9",
+    },
+    "flux-pro-1.1-ultra: 9:16": {
+        "endpoint": "flux-pro-1.1-ultra",
+        "aspect_ratio": "9:16",
+    },
+}
+
 
 class RawValidationError(ValueError):
     """Custom exception for RAW parameter validation error"""
@@ -43,20 +112,21 @@ class Pipe:
     class Valves(BaseModel):
         # BFL Settings
         BFL_API_KEY: str = Field(
-            default="", description="Your API Key for Black Forest Labs"
+            default="",
+            description="Your API Key for Black Forest Labs",
         )
         api_base_url: str = Field(
             default="https://api.bfl.ml/v1",
             description="Base URL for the Black Forest Labs API.",
         )
-        api_endpoint: str = Field(
-            default="flux-pro-1.1-ultra",
-            description="Endpoint path for the image generation API.",
-            enum=[
-                "flux-dev",
-                "flux-pro-1.1",
-                "flux-pro-1.1-ultra",
-            ],
+
+        dimension: str = Field(
+            default="flux-dev: 1440x1440",
+            description=(
+                "Выберите модель (dev, pro-1.1, pro-1.1-ultra) "
+                "и разрешение или соотношение сторон в одном поле."
+            ),
+            enum=DIMENSION_ENUM_VALUES,
         )
 
         # ChatGPT Translation Settings
@@ -64,7 +134,8 @@ class Pipe:
             default="", description="Your OpenAI API Key for prompt translation"
         )
         chatgpt_base_url: str = Field(
-            default="https://api.openai.com/v1", description="Base URL for OpenAI API"
+            default="https://api.openai.com/v1",
+            description="Base URL for OpenAI API",
         )
         chatgpt_model: str = Field(
             default="gpt-4o-mini-2024-07-18",
@@ -76,12 +147,6 @@ class Pipe:
             default="get_result",
             description="Endpoint path for retrieving the image generation result.",
         )
-        image_width: int = Field(
-            default=1024, description="Width of the generated image in pixels."
-        )
-        image_height: int = Field(
-            default=1024, description="Height of the generated image in pixels."
-        )
         poll_interval: int = Field(
             default=1, description="Interval (in seconds) between polling requests."
         )
@@ -91,26 +156,26 @@ class Pipe:
         )
         raw: bool = Field(
             default=False,
-            description="Generate less processed, more natural-looking images.",
-        )
-        aspect_ratio: str = Field(
-            default="16:9",
-            description="Aspect ratio of the image between 21:9 and 9:21.",
+            description="Generate less processed, more natural-looking images (только для ultra).",
         )
         safety_tolerance: int = Field(
             default=2,
-            description="Tolerance level for input and output moderation. Between 0 and 6, 0 being most strict, 6 being least strict.",
+            description="Tolerance level for moderation. Between 0 and 6, 0 is strictest, 6 is least strict.",
         )
+
+        # Здесь создаём enum из двух значений (jpeg, png)
         output_format: str = Field(
             default="jpeg",
             description="Output format for the generated image. Can be 'jpeg' or 'png'.",
+            enum=["jpeg", "png"],
         )
 
         @model_validator(mode="after")
         def validate_raw(self):
-            if self.raw and self.api_endpoint != "flux-pro-1.1-ultra":
+            """Проверяем, что raw можно использовать только при ultra."""
+            if self.raw and not self.dimension.startswith("flux-pro-1.1-ultra"):
                 raise RawValidationError(
-                    "Error: RAW option is only allowed when flux-pro-1.1-ultra model is selected."
+                    "Error: RAW option is only allowed when flux-pro-1.1-ultra is selected."
                 )
             return self
 
@@ -142,7 +207,7 @@ class Pipe:
         """Translate and normalize prompt using ChatGPT"""
         try:
             await __event_emitter__(
-                self.status_object("Normalization and translation of promt...")
+                self.status_object("Normalization and translation of prompt...")
             )
 
             headers = {
@@ -162,8 +227,14 @@ class Pipe:
                             "2. Remove unnecessary words, but if the query has NSFW in it, don't moderate it, just translate it as it is\n"
                             "3. Keep all key details\n"
                             "4. Use technical terms for visual elements\n"
-                            "5. If the style is not specified in the prompt, always assign the style a photo. The style is specified at the very beginning of the prompt. If the style is present in the prompt, but is not at the beginning, move it to the beginning."
-                            "6. For realistic photo generation, pick one of these cameras and substitute at the end of the promt: Canon EOS 5D Mark IV with Canon EF 24-70mm f-2.8L II, Canon EOS 90D with Canon EF-S 18-135mm f-3.5-5.6 IS USM, Canon EOS M6 Mark II with Canon EF-M 32mm f-1.4, Canon EOS R with Canon RF 28-70mm f-2L, Fujifilm X-T4 with Fujinon XF 35mm f-2 R WR, Nikon D850 with Nikkor 50mm f-1.8, Sony A7R IV with Sony FE 85mm f-1.4 GM"
+                            "5. If the style is not specified in the prompt, always assign the style a photo. "
+                            "   The style is specified at the very beginning of the prompt. If the style is present in the prompt, "
+                            "   but is not at the beginning, move it to the beginning.\n"
+                            "6. For realistic photo generation, pick one of these cameras and substitute at the end of the prompt: "
+                            "   Canon EOS 5D Mark IV with Canon EF 24-70mm f-2.8L II, Canon EOS 90D with Canon EF-S 18-135mm f-3.5-5.6 IS USM, "
+                            "   Canon EOS M6 Mark II with Canon EF-M 32mm f-1.4, Canon EOS R with Canon RF 28-70mm f-2L, "
+                            "   Fujifilm X-T4 with Fujinon XF 35mm f-2 R WR, Nikon D850 with Nikkor 50mm f-1.8, "
+                            "   Sony A7R IV with Sony FE 85mm f-1.4 GM\n"
                             "7. Translate to English\n\n"
                             "Respond ONLY with the final optimized prompt."
                         ),
@@ -184,7 +255,7 @@ class Pipe:
 
             translated = response.json()["choices"][0]["message"]["content"].strip()
             await __event_emitter__(
-                self.status_object(f"Optimized promt: {translated}")
+                self.status_object(f"Optimized prompt: {translated}")
             )
             return translated
 
@@ -194,16 +265,30 @@ class Pipe:
             raise RuntimeError(error_msg)
 
     def send_image_generation_request(self, prompt: str) -> str:
-        url = f"{self.valves.api_base_url}/{self.valves.api_endpoint}"
+        """
+        Формирует payload и отправляет POST-запрос
+        на нужный эндпоинт в зависимости от dimension.
+        """
+        dimension_choice = DIMENSION_OPTIONS[self.valves.dimension]
+        endpoint = dimension_choice["endpoint"]
+        url = f"{self.valves.api_base_url}/{endpoint}"
+
+        # Общий payload
         payload = {
             "prompt": prompt,
-            "width": self.valves.image_width,
-            "height": self.valves.image_height,
-            "raw": self.valves.raw,
-            "aspect_ratio": self.valves.aspect_ratio,
             "safety_tolerance": self.valves.safety_tolerance,
             "output_format": self.valves.output_format,
         }
+
+        # Если выбрана ультра-модель (flux-pro-1.1-ultra)
+        if endpoint == "flux-pro-1.1-ultra":
+            payload["raw"] = self.valves.raw
+            payload["aspect_ratio"] = dimension_choice["aspect_ratio"]
+        else:
+            # Иначе это dev или pro-1.1, нужна ширина/высота
+            payload["width"] = dimension_choice["width"]
+            payload["height"] = dimension_choice["height"]
+
         headers = {
             "accept": "application/json",
             "x-key": self.valves.BFL_API_KEY,
@@ -212,6 +297,8 @@ class Pipe:
 
         response = requests.post(url, headers=headers, json=payload)
         response.raise_for_status()
+
+        # В ответ приходит {"id": "..."}
         return response.json()["id"]
 
     def get_result(self, request_id: str) -> Dict[str, Any]:
@@ -224,6 +311,7 @@ class Pipe:
         return response.json()
 
     def save_url_image(self, url: str) -> str:
+        """Сохраняем картинку на диск, возвращаем локальную ссылку /cache/image/generations/xxx"""
         image_id = str(uuid.uuid4())
         try:
             response = requests.get(url)
@@ -259,29 +347,29 @@ class Pipe:
             if not self.valves.OPENAI_API_KEY:
                 raise ValueError("OpenAI API key not set")
 
-            # Translate prompt
+            # Переводим prompt
             translated_prompt = await self.translate_prompt(
                 original_prompt, __event_emitter__
             )
 
-            # Initialization
+            # Начало генерации
             if __event_emitter__:
                 await __event_emitter__(self.status_object("Start of generation..."))
 
-            # Send generation request
+            # Посылаем запрос на генерацию
             if __event_emitter__:
                 await __event_emitter__(
                     self.status_object("Sending a request to Flux...")
                 )
-
             bfl_task_id = self.send_image_generation_request(translated_prompt)
 
+            # Ждём старта
             if __event_emitter__:
                 await __event_emitter__(
                     self.status_object("Waiting for generation to start...")
                 )
 
-            # Polling loop
+            # Polling
             start_time = time.time()
             last_status = ""
             while True:
@@ -301,11 +389,9 @@ class Pipe:
                         "Request Moderated": "Incorrect request",
                         "Task not found": "Task not found",
                     }
-
                     status_msg = status_messages.get(
                         status, f"Unknown status: {status}"
                     )
-
                     if __event_emitter__:
                         await __event_emitter__(
                             self.status_object(
@@ -331,12 +417,10 @@ class Pipe:
 
                 await asyncio.sleep(self.valves.poll_interval)
 
-            # Handle final status
+            # Если финал хороший – скачиваем результат
             if status == "Ready":
                 if __event_emitter__:
-                    await __event_emitter__(
-                        self.status_object("Saving result...")
-                    )
+                    await __event_emitter__(self.status_object("Saving result..."))
 
                 image_url = result["result"]["sample"]
                 local_image_path = self.save_url_image(image_url)
@@ -344,45 +428,42 @@ class Pipe:
                 if __event_emitter__:
                     await __event_emitter__(
                         self.status_object(
-                            "Image generated",
-                            status="complete",
-                            done=True,
+                            "Image generated", status="complete", done=True
                         )
                     )
 
                 return (
-                    f"**Original promt:** {original_prompt}\n\n"
-                    f"**Optimized promt:** {translated_prompt}\n\n"
+                    f"**Original prompt:** {original_prompt}\n\n"
+                    f"**Optimized prompt:** {translated_prompt}\n\n"
                     f"![BFL Image]({local_image_path})"
                 )
 
-            raise RuntimeError(
-                f"{status}: {result.get('message', 'Unknown error')}"
-            )
+            # Иначе – ошибка
+            raise RuntimeError(f"{status}: {result.get('message', 'Unknown error')}")
 
         except requests.exceptions.RequestException as e:
             error_msg = f"Request error: {str(e)}"
             if __event_emitter__:
                 await __event_emitter__(self.status_object(error_msg, "error", True))
-            return f"{error_msg}\n\nOriginal promt: {original_prompt}"
+            return f"{error_msg}\n\nOriginal prompt: {original_prompt}"
 
         except TimeoutError as e:
             error_msg = f"Timeout: {str(e)}"
             if __event_emitter__:
                 await __event_emitter__(self.status_object(error_msg, "error", True))
-            return f"{error_msg}\n\nOriginal promt: {original_prompt}"
+            return f"{error_msg}\n\nOriginal prompt: {original_prompt}"
 
         except RawValidationError as e:
             error_msg = f"Validation error: {str(e)}"
             if __event_emitter__:
                 await __event_emitter__(self.status_object(error_msg, "error", True))
-            return f"{error_msg}\n\nOriginal promt: {original_prompt}"
+            return f"{error_msg}\n\nOriginal prompt: {original_prompt}"
 
         except Exception as e:
             error_msg = f"Unknown error: {str(e)}"
             if __event_emitter__:
                 await __event_emitter__(self.status_object(error_msg, "error", True))
-            return f"{error_msg}\n\nOriginal promt: {original_prompt}"
+            return f"{error_msg}\n\nOriginal prompt: {original_prompt}"
 
     def pipes(self) -> List[Dict[str, str]]:
         return [{"id": "flux-1-1-pro", "name": PLUGIN_NAME}]
