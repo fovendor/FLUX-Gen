@@ -32,7 +32,6 @@ class Pipeline:
         )
         self.pipelines = [
             {"id": "flux-image-gen", "name": "FLUX"},
-            {"id": "flux-pro-fill", "name": "FLUX Inpainting"}
         ]
 
     async def on_startup(self):
@@ -75,7 +74,7 @@ class Pipeline:
 
             # Проверяем, является ли это запросом на inpainting
             inpainting_data = body.get("inpainting_data", {})
-            if inpainting_data and model_id == "flux-pro-fill":
+            if inpainting_data and model_id == "flux-image-gen":
                 # Подготовка данных для inpainting
                 payload = {
                     "image": self._process_base64_image(inpainting_data.get("originalBase64", "")),
