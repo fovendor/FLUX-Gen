@@ -71,20 +71,15 @@ class Pipeline:
                 "x-key": self.valves.BFL_API_KEY,
                 "Content-Type": "application/json",
             }
-
-            # Проверяем, является ли это запросом на inpainting
-            inpainting_data = body.get("inpainting_data", {})
-            if inpainting_data and model_id == "flux-image-gen":
+           
+            if "image" in body and "mask" in body and "prompt" in body:
                 # Подготовка данных для inpainting
                 payload = {
-                    "image": self._process_base64_image(inpainting_data.get("originalBase64", "")),
-                    "mask": self._process_base64_image(inpainting_data.get("maskBase64", "")),
-                    "prompt": inpainting_data.get("promptText", ""),
-                    "output_format": self.valves.output_format,
-                    "steps": 50,
-                    "guidance": 60,
-                    "prompt_upsampling": False
-                }
+                    "image": self._process_base64_image(body["image"]),
+                    "mask": self._process_base64_image(body["mask"]),
+                    "prompt": body["prompt"],
+                    "output_format": self.valves.output_format
+                    }
                 url = f"{self.valves.api_base_url}/flux-pro-1.0-fill"
             else:
                 # Стандартная генерация изображения
