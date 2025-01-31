@@ -170,8 +170,10 @@ class Action:
             try:
                 flux_response = requests.post(
                     f"{self.valves.FLUX_API_URL}/flux-pro-1.0-fill",
-                    headers={"Content-Type": "application/json"},
-                    auth=auth_tuple,
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-key": self.valves.FLUX_API_KEY,  # <-- Добавили ключ в заголовок
+                    },
                     json=payload,
                 )
                 flux_response.raise_for_status()
@@ -203,9 +205,11 @@ class Action:
 
                 try:
                     check_resp = requests.get(
-                        f"{self.valves.FLUX_API_URL}/v1/get_result?id={task_id}",
-                        headers={"Content-Type": "application/json"},
-                        auth=auth_tuple,
+                        f"{self.valves.FLUX_API_URL}/get_result?id={task_id}",
+                        headers={
+                            "Content-Type": "application/json",
+                            "x-key": self.valves.FLUX_API_KEY,
+                        },
                     )
                     check_resp.raise_for_status()
                 except requests.exceptions.RequestException as e:
