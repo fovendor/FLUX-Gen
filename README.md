@@ -1,4 +1,4 @@
-# Integration of Flux 1.1 pro and Open WebUI
+# Flux 1.1 Pro functionality for generating images in Open WebUI
 
 ## Overview
 
@@ -96,7 +96,11 @@ Flux API returns the URL of the image stored in the Black Forest Labs cloud stor
 - **RawValidationError**: Raised when the RAW option is used with unsupported models.
 - **Timeout**: Raised if the result is not ready within the specified timeout period.  
 - **API Errors**: Handles request and response errors from the FLUX API.
-  
+
+## Backlog
+
+1. Add image generation parameters: sampling steps, guidance scale.
+2. Make changes in system promt to follow the instruction exactly in case the user asks not to optimize his promt.
 
 ## License
 
