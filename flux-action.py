@@ -1,7 +1,7 @@
 """
 title: Flux inpainting
 author: fovendor
-version: 0.0.5
+version: 0.0.6
 license: MIT
 required_open_webui_version: 0.4.4
 """
@@ -14,6 +14,7 @@ import time
 import base64
 import uuid
 import requests
+import mimetypes
 from pydantic import BaseModel, Field
 from typing import Callable, Any, Dict, Optional, List
 from pathlib import Path
@@ -30,11 +31,11 @@ class Action:
     class Valves(BaseModel):
         FLUX_API_URL: str = Field(
             default="https://your-flux-host/api",
-            description="Базовый URL API FLUX",
+            description="Базовый URL API FLUX (без / на конце).",
         )
         FLUX_API_KEY: str = Field(
             default="YOUR-FLUX-API-KEY",
-            description="API-ключ для аутентификации (дальше передаём в auth=...)",
+            description="API-ключ для аутентификации (дальше передаём в x-key).",
         )
         STEPS: int = Field(
             default=50,
@@ -52,6 +53,14 @@ class Action:
             default="jpeg",
             description="Формат финального изображения (jpeg/png)",
         )
+        POLL_INTERVAL: int = Field(
+            default=2,
+            description="Интервал (сек) между запросами на get_result.",
+        )
+        MAX_POLL_ATTEMPTS: int = Field(
+            default=30,
+            description="Максимальное кол-во попыток поллинга (status=Ready).",
+        )
 
     def __init__(self):
         self.valves = self.Valves()
@@ -59,6 +68,9 @@ class Action:
     def status_object(
         self, description: str, status: str = "in_progress", done: bool = False
     ) -> Dict:
+        """
+        Унифицированная структура для статусов в Open WebUI.
+        """
         return {
             "type": "status",
             "data": {
@@ -69,6 +81,9 @@ class Action:
         }
 
     def find_generated_image_path(self, messages: List[Dict]) -> Optional[str]:
+        """
+        Ищем последнее сгенерированное изображение в формате ![BFL Image](...)
+        """
         for msg in reversed(messages):
             if msg.get("role") == "assistant" and "![BFL Image](" in msg.get(
                 "content", ""
@@ -79,6 +94,10 @@ class Action:
         return None
 
     def find_existing_artifact_message(self, messages: List[Dict]) -> Optional[Dict]:
+        """
+        Ищем последнее сообщение с HTML/JSON-кодом (artifact),
+        чтобы при необходимости обновить его через edit_message.
+        """
         for msg in reversed(messages):
             if msg.get("role") == "assistant" and (
                 "```html" in msg.get("content", "")
@@ -86,6 +105,30 @@ class Action:
             ):
                 return msg
         return None
+
+    def save_url_image(self, url: str) -> str:
+        """
+        Скачиваем изображение по ссылке и сохраняем локально
+        в папку /cache/image/generations.
+        Возвращаем путь, по которому это изображение потом доступно.
+        """
+        image_id = str(uuid.uuid4())
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+
+            # Определим тип контента и расширение
+            mime_type = response.headers.get("content-type", "")
+            ext = mimetypes.guess_extension(mime_type) or ".jpg"
+
+            file_path = IMAGE_CACHE_DIR / f"{image_id}{ext}"
+            with open(file_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            return f"/cache/image/generations/{file_path.name}"
+        except Exception as e:
+            raise RuntimeError(f"Ошибка при скачивании изображения: {e}")
 
     async def action(
         self,
@@ -96,41 +139,41 @@ class Action:
     ) -> Optional[dict]:
         """
         Основной метод плагина.
-        Если есть image/mask/prompt => делаем inpainting через FLUX.
-        Иначе (нет их) => рендерим/обновляем HTML для маски.
+        1) Если есть image/mask/prompt => делаем inpainting через FLUX
+           - Отправляем запрос на flux-pro-1.0-fill
+           - Ждём статус Ready
+           - Скачиваем result.sample и выводим в чате
+        2) Иначе -> рендерим/обновляем HTML для выбора области и ввода prompt.
         """
 
         # ---------------------------------------------------------------------
-        # 1. Подставляем заглушки для обязательных полей
-        #    (чтобы Open WebUI не выкинул 400 ещё до входа в плагин)
+        # 1. Подстановка заглушек для обязательных полей (чтобы Open WebUI не дал 400)
         # ---------------------------------------------------------------------
-        # Если у вас реальный модель-id — замените здесь "flux_test_7.flux-1-1-pro"
         body.setdefault("model", "flux_test_7.flux-1-1-pro")
         body.setdefault("chat_id", "dummy_chat_id")
         body.setdefault("session_id", "dummy_session_id")
         body.setdefault("id", "dummy_message_id")
 
-        # ---------------------------------------------------------------------
         if DEBUG:
             print(f"\n[DEBUG] Поступил запрос в flux_inpainting action. Body = {body}")
 
-        # Забираем messages (если нет, будет пустой список)
+        # Сообщения чата
         messages = body.get("messages", [])
 
+        # Выводим стартовый статус
         if __event_emitter__:
             await __event_emitter__(
                 self.status_object("Обработка запроса...", "in_progress", False)
             )
 
         # ---------------------------------------------------------------------
-        # 2. Если в body есть image/mask/prompt => значит делаем inpainting
+        # 2. Если есть image/mask/prompt => inpainting
         # ---------------------------------------------------------------------
         if all(k in body for k in ("image", "mask", "prompt")):
             image_b64 = body["image"]
             mask_b64 = body["mask"]
             prompt_str = body["prompt"]
 
-            # Для steps/guidance/выходного формата подставляем дефолты, если не пришли
             steps_val = body.get("steps", self.valves.STEPS)
             guidance_val = body.get("guidance", self.valves.GUIDANCE)
             output_format_val = body.get("output_format", self.valves.OUTPUT_FORMAT)
@@ -153,10 +196,10 @@ class Action:
                     self.status_object("Отправляем задачу в FLUX...", "in_progress")
                 )
 
-            # Готовим payload для FLUX
+            # Формируем payload для inpainting
             payload = {
-                "image": image_b64,
-                "mask": mask_b64,
+                "image": image_b64,  # base64 без префикса data:image...
+                "mask": mask_b64,  # base64 без префикса
                 "prompt": prompt_str,
                 "steps": steps_val,
                 "guidance": guidance_val,
@@ -164,21 +207,20 @@ class Action:
                 "safety_tolerance": safety_val,
             }
 
-            auth_tuple = ("apikey", self.valves.FLUX_API_KEY)
-
-            # -- 1) Создать задачу
+            # POST-запрос на создание задачи inpainting
             try:
                 flux_response = requests.post(
                     f"{self.valves.FLUX_API_URL}/flux-pro-1.0-fill",
                     headers={
                         "Content-Type": "application/json",
-                        "x-key": self.valves.FLUX_API_KEY,  # <-- Добавили ключ в заголовок
+                        "x-key": self.valves.FLUX_API_KEY,
                     },
                     json=payload,
+                    timeout=30,
                 )
                 flux_response.raise_for_status()
             except requests.exceptions.RequestException as e:
-                msg = f"Ошибка при запросе FLUX: {e}"
+                msg = f"Ошибка при запросе к FLUX: {e}"
                 if DEBUG:
                     print(msg)
                 if __event_emitter__:
@@ -188,28 +230,37 @@ class Action:
             flux_json = flux_response.json()
             task_id = flux_json.get("id")
             if not task_id:
-                msg = f"Flux не вернул task_id: {flux_json}"
+                msg = f"Flux не вернул id задачи: {flux_json}"
                 if DEBUG:
                     print(msg)
                 if __event_emitter__:
                     await __event_emitter__(self.status_object(msg, "error", True))
                 return {"status": "error", "message": msg}
 
-            # -- 2) Polling результата
-            max_attempts = 30
-            final_image_b64 = None
+            # -----------------------------------------------------------------
+            # 3. Поллинг результата
+            # -----------------------------------------------------------------
+            max_attempts = self.valves.MAX_POLL_ATTEMPTS
+            poll_interval = self.valves.POLL_INTERVAL
+            image_url = None
+
             for attempt in range(max_attempts):
-                time.sleep(2)
+                time.sleep(poll_interval)
+
                 if DEBUG:
-                    print(f"[DEBUG] Поллинг FLUX (попытка {attempt+1}/{max_attempts})")
+                    print(
+                        f"[DEBUG] Поллинг FLUX (попытка {attempt+1}/{max_attempts}) task_id={task_id}"
+                    )
 
                 try:
                     check_resp = requests.get(
-                        f"{self.valves.FLUX_API_URL}/get_result?id={task_id}",
+                        f"{self.valves.FLUX_API_URL}/get_result",
                         headers={
                             "Content-Type": "application/json",
                             "x-key": self.valves.FLUX_API_KEY,
                         },
+                        params={"id": task_id},
+                        timeout=30,
                     )
                     check_resp.raise_for_status()
                 except requests.exceptions.RequestException as e:
@@ -222,16 +273,25 @@ class Action:
 
                 rjson = check_resp.json()
                 status_ = rjson.get("status")
+
                 if DEBUG:
                     print(f"[DEBUG] Flux status={status_}")
 
+                # Обновим статус в чат (по желанию)
+                if __event_emitter__ and status_ not in ["Pending", "Processing"]:
+                    await __event_emitter__(
+                        self.status_object(
+                            f"Flux status: {status_}", "in_progress", done=False
+                        )
+                    )
+
+                # Проверяем, готово ли
                 if status_ == "Ready":
-                    result_obj = rjson.get("result")
-                    if isinstance(result_obj, dict) and "image" in result_obj:
-                        final_image_b64 = result_obj["image"]
-                    elif isinstance(result_obj, str):
-                        final_image_b64 = result_obj
+                    result_obj = rjson.get("result", {})
+                    # Теперь ищем "sample" — ссылка на результат
+                    image_url = result_obj.get("sample")
                     break
+
                 elif status_ in [
                     "Error",
                     "Content Moderated",
@@ -244,9 +304,9 @@ class Action:
                     if __event_emitter__:
                         await __event_emitter__(self.status_object(msg, "error", True))
                     return {"status": "error", "message": msg}
-                # Иначе Pending -> ждём
+                # Иначе (Pending / Processing) – продолжаем поллинг
 
-            if not final_image_b64:
+            if not image_url:
                 msg = "Flux не вернул результат в отведённое время."
                 if DEBUG:
                     print(msg)
@@ -254,25 +314,33 @@ class Action:
                     await __event_emitter__(self.status_object(msg, "error", True))
                 return {"status": "error", "message": msg}
 
-            # -- 3) Сохраняем результат
-            new_id = str(uuid.uuid4())
-            new_filename = IMAGE_CACHE_DIR / f"{new_id}.{output_format_val}"
-
-            # Удаляем префикс data:...
-            if final_image_b64.startswith("data:"):
-                _, final_image_b64 = final_image_b64.split("base64,", 1)
-
-            img_data = base64.b64decode(final_image_b64)
-            with open(new_filename, "wb") as f:
-                f.write(img_data)
-
-            final_path_for_chat = f"/cache/image/generations/{new_filename.name}"
-            content_msg = (
-                f"Результат inpainting:\n\n![BFL Image]({final_path_for_chat})"
-            )
-
+            # -----------------------------------------------------------------
+            # 4. Скачиваем финальное изображение по ссылке
+            # -----------------------------------------------------------------
             if __event_emitter__:
-                # Выводим в чат новое сообщение
+                await __event_emitter__(
+                    self.status_object(
+                        "Загружаем финальное изображение...", "in_progress"
+                    )
+                )
+
+            try:
+                local_image_path = self.save_url_image(image_url)
+            except Exception as e:
+                msg = f"Ошибка скачивания изображения: {e}"
+                if DEBUG:
+                    print(msg)
+                if __event_emitter__:
+                    await __event_emitter__(self.status_object(msg, "error", True))
+                return {"status": "error", "message": msg}
+
+            # Формируем сообщение с результатом
+            content_msg = f"Результат inpainting:\n\n![BFL Image]({local_image_path})"
+
+            # -----------------------------------------------------------------
+            # 5. Выводим готовое изображение в чат
+            # -----------------------------------------------------------------
+            if __event_emitter__:
                 await __event_emitter__(
                     {
                         "type": "message",
@@ -288,7 +356,7 @@ class Action:
             return {"status": "ok", "message": "Inpainting завершён"}
 
         # ---------------------------------------------------------------------
-        # 3. Иначе, нет image/mask/prompt => рендерим/обновляем HTML-артефакт
+        # 3. Иначе, если нет image/mask/prompt => отрисовываем/обновляем HTML-форму
         # ---------------------------------------------------------------------
         if DEBUG:
             print("[DEBUG] Нет image/mask/prompt => рендерим HTML-инструмент")
@@ -303,7 +371,7 @@ class Action:
         # Пытаемся найти последнее сгенерированное изображение
         image_path = self.find_generated_image_path(messages)
         if not image_path:
-            error_msg = "В сообщениях не нашли последнее сгенерированное изображение!"
+            error_msg = "В сообщениях не найдено последнее сгенерированное изображение!"
             if DEBUG:
                 print("[DEBUG]", error_msg)
             if __event_emitter__:
@@ -320,13 +388,13 @@ class Action:
                 await __event_emitter__(self.status_object(error_msg, "error", True))
             return {"status": "error", "message": error_msg}
 
-        # Подставим дефолты
+        # Значения по умолчанию
         steps_val = self.valves.STEPS
         guidance_val = self.valves.GUIDANCE
         safety_val = self.valves.SAFETY_TOLERANCE
         output_fmt = self.valves.OUTPUT_FORMAT
 
-        # HTML для покраски маски
+        # Генерируем HTML для маски
         artifact_html = f"""
 ```html
 <head>
@@ -447,9 +515,9 @@ class Action:
 <body>
     <h1>Inpainting Helper</h1>
     <p style="color: #ccc;">
-       <b>Steps:</b> {steps_val}, 
-       <b>Guidance:</b> {guidance_val}, 
-       <b>Safety:</b> {safety_val}, 
+       <b>Steps:</b> {steps_val},
+       <b>Guidance:</b> {guidance_val},
+       <b>Safety:</b> {safety_val},
        <b>Format:</b> {output_fmt}
     </p>
     <canvas id="imageCanvas"></canvas>
@@ -464,7 +532,6 @@ class Action:
     </div>
 
     <script>
-        // Значения по умолчанию, подгружаем из Python
         const stepsVal = {steps_val};
         const guidanceVal = {guidance_val};
         const safetyVal = {safety_val};
@@ -487,14 +554,13 @@ class Action:
         const promptInput = document.getElementById("promptInput");
         const clearBtn = document.getElementById("clearBtn");
 
-        // Функция для удаления префикса data:image/...;base64,
         function stripBase64Prefix(dataURL) {{
             if (!dataURL) return "";
             const match = dataURL.match(/^data:.*?;base64,(.*)$/);
             if (match && match[1]) {{
                 return match[1];
             }}
-            return dataURL; // если префикса не было
+            return dataURL;
         }}
 
         function getCanvasCoords(e) {{
@@ -525,7 +591,6 @@ class Action:
 
         function redrawCanvas() {{
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            if (!originalImage) return;
             drawFadedBackground();
             if (currentRect) drawSelection();
             updateControls();
@@ -538,7 +603,6 @@ class Action:
         }}
 
         canvas.addEventListener("mousedown", e => {{
-            if (!originalImage) return;
             const c = getCanvasCoords(e);
             startX = c.x;
             startY = c.y;
@@ -577,7 +641,7 @@ class Action:
                 alert("Сначала выделите область на изображении.");
                 return;
             }}
-            console.log("[JS] Сформировать mask по прямоугольнику", currentRect);
+            console.log("[JS] Создаём маску по прямоугольнику", currentRect);
 
             // Создаём canvas-маску
             const m = document.createElement("canvas");
@@ -591,19 +655,17 @@ class Action:
             const rawMask = m.toDataURL("image/png");
             maskBase64 = stripBase64Prefix(rawMask);
 
-            // Убираем префикс и из originalBase64
             const rawImage = stripBase64Prefix(originalBase64);
-
             promptText = promptInput.value.trim();
+
             console.log("[JS] Prompt:", promptText);
 
-            // Формируем payload для плагина
             const payload = {{
                 model: '{body.get("model", "flux_test_7.flux-1-1-pro")}',
                 chat_id: '{body.get("chat_id", "dummy_chat_id")}',
                 session_id: '{body.get("session_id", "dummy_session_id")}',
                 id: '{body.get("id", "dummy_message_id")}',
-                messages: {json.dumps(messages)},  // <- если нужно
+                messages: {json.dumps(messages)},
 
                 image: rawImage,
                 mask: maskBase64,
@@ -643,7 +705,7 @@ class Action:
             updateControls();
         }});
 
-        // Подтягиваем последнее изображение:
+        // Загружаем последнее сгенерированное изображение в canvas
         const fileUrl = "/cache/image/generations/{filename}";
         fetch(fileUrl)
             .then(r => {{
@@ -654,7 +716,7 @@ class Action:
                 const rd = new FileReader();
                 rd.onload = e => {{
                     originalBase64 = e.target.result;
-                    console.log("[JS] Оригинал base64 (с префиксом) загружен");
+                    console.log("[JS] Оригинал base64 загружен");
                     originalImage.onload = () => {{
                         canvas.width = originalImage.naturalWidth;
                         canvas.height = originalImage.naturalHeight;
@@ -674,9 +736,11 @@ class Action:
 
         existing_artifact_msg = self.find_existing_artifact_message(messages)
 
+        # С небольшой задержкой, чтобы успеть отрендерить
         await asyncio.sleep(1)
+
         if not existing_artifact_msg:
-            # Создаём новое сообщение
+            # Если раньше не было HTML-блока для маски, отправляем новое сообщение
             if __event_emitter__:
                 await __event_emitter__(
                     {
@@ -690,7 +754,7 @@ class Action:
                     )
                 )
         else:
-            # Обновляем существующее
+            # Обновляем существующее сообщение
             msg_id = existing_artifact_msg.get("id")
             if msg_id:
                 if __event_emitter__:
@@ -708,7 +772,7 @@ class Action:
                         self.status_object("HTML-артефакт обновлён", "complete", True)
                     )
             else:
-                # Нет ID => просто статусы
+                # Нет ID => просто выводим статус
                 if __event_emitter__:
                     await __event_emitter__(
                         self.status_object(
