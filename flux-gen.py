@@ -2,7 +2,7 @@
 title: Black Forest Labs: FLUX Gen
 author: fovendor
 version: 0.9.4
-github: https://github.com/fovendor/open-web-ui-flux1.1-pro
+github: https://github.com/fovendor/FLUX-Gen
 license: MIT
 requirements: pydantic, requests, asyncio
 environment_variables: BFL_API_KEY, OPENAI_API_KEY
