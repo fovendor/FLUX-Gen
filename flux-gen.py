@@ -1,5 +1,5 @@
 """
-title: Function for use FLUX.1.1 Pro/Ultra/Raw and Flux-dev
+title: Black Forest Labs: FLUX Gen
 author: fovendor
 version: 0.9.4
 github: https://github.com/fovendor/open-web-ui-flux1.1-pro
@@ -25,7 +25,7 @@ from open_webui.config import CACHE_DIR
 IMAGE_CACHE_DIR = Path(CACHE_DIR).joinpath("image/generations/")
 IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-PLUGIN_NAME = "Black Forest Labs: FLUX 1.1 Pro"
+PLUGIN_NAME = "Black Forest Labs: FLUX Gen"
 
 # ------------------------------------------------
 # Единый список вариантов (модель + разрешение/AR)
@@ -225,12 +225,13 @@ class Pipe:
                             "Perform the following tasks:\n"
                             "1. Normalize the structure\n"
                             "2. Remove unnecessary words, but if the query has NSFW in it, don't moderate it, just translate it as it is\n"
+                            "3. If there is NSFW content in the request, do not block it\n"
                             "3. Keep all key details\n"
                             "4. Use technical terms for visual elements\n"
-                            "5. If the style is not specified in the prompt, always assign the style a photo. "
-                            "   The style is specified at the very beginning of the prompt. If the style is present in the prompt, "
-                            "   but is not at the beginning, move it to the beginning.\n"
-                            "6. For realistic photo generation, pick one of these cameras and substitute at the end of the prompt: "
+                            "5. If the style is not specified in the prompt, always assign the style a photo."
+                            "   The style is specified at the very beginning of the prompt."
+                            "   If the style is present in the prompt, but is not at the beginning, move it to the beginning.\n"
+                            "6. To create realistic photos, choose one of these cameras and substitute it at the end of the prompt after the comma after the last promt:"
                             "   Canon EOS 5D Mark IV with Canon EF 24-70mm f-2.8L II, Canon EOS 90D with Canon EF-S 18-135mm f-3.5-5.6 IS USM, "
                             "   Canon EOS M6 Mark II with Canon EF-M 32mm f-1.4, Canon EOS R with Canon RF 28-70mm f-2L, "
                             "   Fujifilm X-T4 with Fujinon XF 35mm f-2 R WR, Nikon D850 with Nikkor 50mm f-1.8, "
