@@ -40,7 +40,7 @@ With this function, users can generate high-quality images, customize parameters
 
 ### Function Integration
 
-Place the plugin code in the Open WebUI feature catalog manually or use the blue Get button at [openwebui.com](https://openwebui.com/f/fovendor/flux_1_1_pro_function).
+Place the plugin code in the Open WebUI feature catalog manually or use the blue Get button at [openwebui.com](https://openwebui.com/f/fovendor/flux_gen).
 
 ### Parameter Entry
 
