@@ -1,5 +1,7 @@
 # Flux 1.1 Pro functionality for generating images in Open WebUI
 
+> The plugin's development has been temporarily suspended, its functionality is not guaranteed.
+
 ## Overview
 
 This Python function integrates the **Black Forest Labs FLUX** image generation API into the Open WebUI platform. It supports several FLUX models:
